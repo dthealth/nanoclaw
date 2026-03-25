@@ -4,6 +4,7 @@
  */
 import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
@@ -26,6 +27,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
+import { readEnvFileForContainer } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -44,7 +46,7 @@ export interface ContainerInput {
 }
 
 export interface ContainerOutput {
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'timeout';
   result: string | null;
   newSessionId?: string;
   error?: string;
@@ -199,6 +201,16 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Snowflake MFA token cache — persisted on host so tokens survive container restarts
+  const snowflakeCacheDir = path.join(os.homedir(), '.snowflake');
+  if (fs.existsSync(snowflakeCacheDir)) {
+    mounts.push({
+      hostPath: snowflakeCacheDir,
+      containerPath: '/home/node/.snowflake',
+      readonly: false,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -236,6 +248,12 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  // Forward user-defined env vars from .env (e.g. API keys for tools)
+  const userEnv = readEnvFileForContainer();
+  for (const [key, value] of Object.entries(userEnv)) {
+    args.push('-e', `${key}=${value}`);
   }
 
   // Runtime-specific args for host gateway resolution
@@ -462,7 +480,7 @@ export async function runContainerAgent(
           );
           outputChain.then(() => {
             resolve({
-              status: 'success',
+              status: 'timeout',
               result: null,
               newSessionId,
             });
