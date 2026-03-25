@@ -24,6 +24,7 @@ import {
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
+  isContainerRuntimeRunning,
   PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
@@ -177,6 +178,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
 
+  // Check container runtime is reachable before attempting to spawn
+  if (!isContainerRuntimeRunning()) {
+    logger.error(
+      { group: group.name },
+      'Docker is not running, cannot spawn agent',
+    );
+    await channel.sendMessage(
+      chatJid,
+      'Docker is not running — I cannot process your message. Please start Docker and try again.',
+    );
+    return false;
+  }
+
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
@@ -227,6 +241,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
     if (result.status === 'success') {
       queue.notifyIdle(chatJid);
+    }
+
+    if (result.status === 'timeout') {
+      queue.notifyIdle(chatJid);
+      await channel.sendMessage(
+        chatJid,
+        'The agent timed out and was stopped. It may have been stuck or waiting. Please resend your message to retry.',
+      );
     }
 
     if (result.status === 'error') {
