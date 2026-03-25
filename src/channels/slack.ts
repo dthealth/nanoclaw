@@ -28,6 +28,11 @@ export interface SlackChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
+// Reconnect if no message received within this window (30 minutes)
+const WATCHDOG_IDLE_MS = 30 * 60 * 1000;
+// How often the watchdog checks (5 minutes)
+const WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;
+
 export class SlackChannel implements Channel {
   name = 'slack';
 
@@ -37,6 +42,8 @@ export class SlackChannel implements Channel {
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private userNameCache = new Map<string, string>();
+  private lastMessageAt = Date.now();
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
 
   private opts: SlackChannelOpts;
 
@@ -89,13 +96,13 @@ export class SlackChannel implements Channel {
 
       // Always report metadata for group discovery
       this.opts.onChatMetadata(jid, timestamp, undefined, 'slack', isGroup);
+      this.lastMessageAt = Date.now();
 
       // Only deliver full messages for registered groups
       const groups = this.opts.registeredGroups();
       if (!groups[jid]) return;
 
-      const isBotMessage =
-        !!msg.bot_id || msg.user === this.botUserId;
+      const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
 
       let senderName: string;
       if (isBotMessage) {
@@ -113,7 +120,10 @@ export class SlackChannel implements Channel {
       let content = msg.text;
       if (this.botUserId && !isBotMessage) {
         const mentionPattern = `<@${this.botUserId}>`;
-        if (content.includes(mentionPattern) && !TRIGGER_PATTERN.test(content)) {
+        if (
+          content.includes(mentionPattern) &&
+          !TRIGGER_PATTERN.test(content)
+        ) {
           content = `@${ASSISTANT_NAME} ${content}`;
         }
       }
@@ -142,19 +152,52 @@ export class SlackChannel implements Channel {
       this.botUserId = auth.user_id as string;
       logger.info({ botUserId: this.botUserId }, 'Connected to Slack');
     } catch (err) {
-      logger.warn(
-        { err },
-        'Connected to Slack but failed to get bot user ID',
-      );
+      logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
     }
 
     this.connected = true;
+    this.lastMessageAt = Date.now();
 
     // Flush any messages queued before connection
     await this.flushOutgoingQueue();
 
     // Sync channel names on startup
     await this.syncChannelMetadata();
+
+    // Start watchdog to detect silent socket drops
+    this.startWatchdog();
+  }
+
+  private startWatchdog(): void {
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    this.watchdogTimer = setInterval(() => {
+      void this.checkConnection();
+    }, WATCHDOG_INTERVAL_MS);
+  }
+
+  private async checkConnection(): Promise<void> {
+    const idleMs = Date.now() - this.lastMessageAt;
+    if (idleMs < WATCHDOG_IDLE_MS) return;
+
+    logger.warn(
+      { idleMinutes: Math.round(idleMs / 60000) },
+      'Slack watchdog: idle too long, verifying connection',
+    );
+
+    // Ping Slack API to check if connection is alive
+    try {
+      await this.app.client.auth.test();
+      // API works — socket may just be quiet. Reset timer to avoid repeated checks.
+      this.lastMessageAt = Date.now();
+      logger.info('Slack watchdog: connection verified, resetting idle timer');
+    } catch (err) {
+      logger.error(
+        { err },
+        'Slack watchdog: connection check failed, triggering process restart',
+      );
+      // Exit so launchd restarts the process cleanly
+      process.exit(1);
+    }
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
@@ -201,6 +244,10 @@ export class SlackChannel implements Channel {
 
   async disconnect(): Promise<void> {
     this.connected = false;
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
     await this.app.stop();
   }
 
@@ -245,9 +292,7 @@ export class SlackChannel implements Channel {
     }
   }
 
-  private async resolveUserName(
-    userId: string,
-  ): Promise<string | undefined> {
+  private async resolveUserName(userId: string): Promise<string | undefined> {
     if (!userId) return undefined;
 
     const cached = this.userNameCache.get(userId);
