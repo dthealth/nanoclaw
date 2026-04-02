@@ -181,23 +181,13 @@ export class SlackChannel implements Channel {
 
     logger.warn(
       { idleMinutes: Math.round(idleMs / 60000) },
-      'Slack watchdog: idle too long, verifying connection',
+      'Slack watchdog: idle too long, restarting process to refresh socket',
     );
 
-    // Ping Slack API to check if connection is alive
-    try {
-      await this.app.client.auth.test();
-      // API works — socket may just be quiet. Reset timer to avoid repeated checks.
-      this.lastMessageAt = Date.now();
-      logger.info('Slack watchdog: connection verified, resetting idle timer');
-    } catch (err) {
-      logger.error(
-        { err },
-        'Slack watchdog: connection check failed, triggering process restart',
-      );
-      // Exit so launchd restarts the process cleanly
-      process.exit(1);
-    }
+    // auth.test() only checks the HTTP API, not the Socket Mode WebSocket.
+    // The socket can silently drop while the API remains reachable.
+    // Safest fix: exit and let launchd restart cleanly.
+    process.exit(1);
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
