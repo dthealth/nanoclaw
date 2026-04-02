@@ -478,13 +478,16 @@ export async function runContainerAgent(
             { group: group.name, containerName, duration, code },
             'Container timed out after output (idle cleanup)',
           );
-          outputChain.then(() => {
-            resolve({
-              status: 'timeout',
-              result: null,
-              newSessionId,
-            });
-          });
+          const timeoutOutput: ContainerOutput = {
+            status: 'timeout',
+            result: null,
+            newSessionId,
+          };
+          outputChain
+            .then(() =>
+              onOutput ? onOutput(timeoutOutput) : Promise.resolve(),
+            )
+            .then(() => resolve(timeoutOutput));
           return;
         }
 
