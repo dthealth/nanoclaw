@@ -31,6 +31,10 @@ groups/global/*
 # IDE
 .idea/
 .vscode/
+.claude/settings.local.json
+
+# Stray runtime DB
+nanoclaw.db
 
 # Skills system (local per-installation state)
 .nanoclaw/
