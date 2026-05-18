@@ -31,6 +31,9 @@ import { readEnvFileForContainer } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
+// Resolved once at startup so op:// refs are never re-evaluated per container spawn.
+const cachedContainerEnv: Record<string, string> = readEnvFileForContainer();
+
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
@@ -254,8 +257,7 @@ function buildVolumeMounts(
 }
 
 function writeSecretsFile(secretsFile: string): void {
-  const userEnv = readEnvFileForContainer();
-  const lines = Object.entries(userEnv)
+  const lines = Object.entries(cachedContainerEnv)
     .map(([k, v]) => `${k}=${v}`)
     .join('\n');
   fs.writeFileSync(secretsFile, lines, { mode: 0o600 });
@@ -332,7 +334,10 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const secretsFile = path.join(os.tmpdir(), `nanoclaw-secrets-${containerName}`);
+  const secretsFile = path.join(
+    os.tmpdir(),
+    `nanoclaw-secrets-${containerName}`,
+  );
   writeSecretsFile(secretsFile);
   const containerArgs = buildContainerArgs(mounts, containerName, secretsFile);
 
@@ -490,7 +495,11 @@ export async function runContainerAgent(
 
     container.on('close', (code) => {
       clearTimeout(timeout);
-      try { fs.unlinkSync(secretsFile); } catch { /* already gone */ }
+      try {
+        fs.unlinkSync(secretsFile);
+      } catch {
+        /* already gone */
+      }
       const duration = Date.now() - startTime;
 
       if (timedOut) {
