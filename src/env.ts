@@ -1,6 +1,24 @@
 import fs from 'fs';
 import path from 'path';
+import { spawnSync } from 'child_process';
 import { logger } from './logger.js';
+
+function resolveOpRef(ref: string): string {
+  const result = spawnSync('op', ['read', ref], { encoding: 'utf-8' });
+  if (result.error || result.status !== 0) {
+    logger.warn(
+      { ref, stderr: result.stderr?.trim() },
+      '1Password op read failed, using raw value',
+    );
+    return ref;
+  }
+  return result.stdout.trim();
+}
+
+function resolveValue(value: string): string {
+  if (value.startsWith('op://')) return resolveOpRef(value);
+  return value;
+}
 
 /**
  * Parse the .env file and return values for the requested keys.
@@ -36,7 +54,7 @@ export function readEnvFile(keys: string[]): Record<string, string> {
     ) {
       value = value.slice(1, -1);
     }
-    if (value) result[key] = value;
+    if (value) result[key] = resolveValue(value);
   }
 
   return result;
@@ -91,7 +109,7 @@ export function readEnvFileForContainer(): Record<string, string> {
     ) {
       value = value.slice(1, -1);
     }
-    if (value) result[key] = value;
+    if (value) result[key] = resolveValue(value);
   }
 
   return result;

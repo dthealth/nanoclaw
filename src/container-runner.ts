@@ -27,6 +27,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
+import { readEnvFileForContainer } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -276,6 +277,12 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  // Forward user-defined env vars from .env (e.g. API keys for tools)
+  const userEnv = readEnvFileForContainer();
+  for (const [key, value] of Object.entries(userEnv)) {
+    args.push('-e', `${key}=${value}`);
   }
 
   // Runtime-specific args for host gateway resolution
