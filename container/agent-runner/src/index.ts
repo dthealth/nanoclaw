@@ -621,6 +621,21 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Load user secrets from the mounted secrets file into process.env.
+  // Secrets are passed as a file rather than -e args to stay out of docker inspect.
+  try {
+    const secretsContent = fs.readFileSync('/run/secrets/env', 'utf-8');
+    for (const line of secretsContent.split('\n')) {
+      const eqIdx = line.indexOf('=');
+      if (eqIdx === -1) continue;
+      const key = line.slice(0, eqIdx).trim();
+      const value = line.slice(eqIdx + 1);
+      if (key) process.env[key] = value;
+    }
+  } catch {
+    // Not present when no user env vars are configured — that's fine.
+  }
+
   // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
   // No real secrets exist in the container environment.
   const sdkEnv: Record<string, string | undefined> = {

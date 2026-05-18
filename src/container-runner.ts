@@ -253,9 +253,18 @@ function buildVolumeMounts(
   return mounts;
 }
 
+function writeSecretsFile(secretsFile: string): void {
+  const userEnv = readEnvFileForContainer();
+  const lines = Object.entries(userEnv)
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+  fs.writeFileSync(secretsFile, lines, { mode: 0o600 });
+}
+
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  secretsFile: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -279,11 +288,9 @@ function buildContainerArgs(
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
 
-  // Forward user-defined env vars from .env (e.g. API keys for tools)
-  const userEnv = readEnvFileForContainer();
-  for (const [key, value] of Object.entries(userEnv)) {
-    args.push('-e', `${key}=${value}`);
-  }
+  // Mount user secrets as a file rather than -e args — keeps them out of
+  // docker inspect, process listings, and container env dumps.
+  args.push('-v', `${secretsFile}:/run/secrets/env:ro`);
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
@@ -325,7 +332,9 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const secretsFile = path.join(os.tmpdir(), `nanoclaw-secrets-${containerName}`);
+  writeSecretsFile(secretsFile);
+  const containerArgs = buildContainerArgs(mounts, containerName, secretsFile);
 
   logger.debug(
     {
@@ -481,6 +490,7 @@ export async function runContainerAgent(
 
     container.on('close', (code) => {
       clearTimeout(timeout);
+      try { fs.unlinkSync(secretsFile); } catch { /* already gone */ }
       const duration = Date.now() - startTime;
 
       if (timedOut) {
