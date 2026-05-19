@@ -6,11 +6,16 @@ import { logger } from './logger.js';
 function resolveOpRef(ref: string): string {
   const result = spawnSync('op', ['read', ref], { encoding: 'utf-8' });
   if (result.error || result.status !== 0) {
-    logger.warn(
-      { ref, stderr: result.stderr?.trim() },
-      '1Password op read failed, using raw value',
+    const stderr = result.stderr?.trim() || result.error?.message || 'unknown';
+    logger.error(
+      { ref, stderr },
+      '1Password op read failed — refusing to cache raw op:// reference',
     );
-    return ref;
+    throw new Error(
+      `Failed to resolve 1Password reference ${ref}: ${stderr}. ` +
+        `Ensure 'op' CLI is authenticated (run 'op whoami') and the ` +
+        `desktop app integration is enabled in 1Password → Settings → Developer.`,
+    );
   }
   return result.stdout.trim();
 }

@@ -181,13 +181,24 @@ export class SlackChannel implements Channel {
 
     logger.warn(
       { idleMinutes: Math.round(idleMs / 60000) },
-      'Slack watchdog: idle too long, restarting process to refresh socket',
+      'Slack watchdog: idle too long, refreshing socket',
     );
 
     // auth.test() only checks the HTTP API, not the Socket Mode WebSocket.
-    // The socket can silently drop while the API remains reachable.
-    // Safest fix: exit and let launchd restart cleanly.
-    process.exit(1);
+    // The socket can silently drop while the API remains reachable. Cycle
+    // the Bolt app to force a fresh WebSocket without killing the process.
+    this.connected = false;
+    try {
+      await this.app.stop();
+      await this.app.start();
+      this.connected = true;
+      this.lastMessageAt = Date.now();
+      await this.flushOutgoingQueue();
+      logger.info('Slack watchdog: socket refreshed');
+    } catch (err) {
+      logger.error({ err }, 'Slack watchdog: socket refresh failed');
+      // Leave connected=false so sends queue until next watchdog tick succeeds.
+    }
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
