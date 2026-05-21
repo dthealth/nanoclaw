@@ -44,6 +44,7 @@ export class SlackChannel implements Channel {
   private userNameCache = new Map<string, string>();
   private lastMessageAt = Date.now();
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private refreshing = false;
 
   private opts: SlackChannelOpts;
 
@@ -176,6 +177,7 @@ export class SlackChannel implements Channel {
   }
 
   private async checkConnection(): Promise<void> {
+    if (this.refreshing) return;
     const idleMs = Date.now() - this.lastMessageAt;
     if (idleMs < WATCHDOG_IDLE_MS) return;
 
@@ -187,6 +189,7 @@ export class SlackChannel implements Channel {
     // auth.test() only checks the HTTP API, not the Socket Mode WebSocket.
     // The socket can silently drop while the API remains reachable. Cycle
     // the Bolt app to force a fresh WebSocket without killing the process.
+    this.refreshing = true;
     this.connected = false;
     try {
       await this.app.stop();
@@ -198,6 +201,8 @@ export class SlackChannel implements Channel {
     } catch (err) {
       logger.error({ err }, 'Slack watchdog: socket refresh failed');
       // Leave connected=false so sends queue until next watchdog tick succeeds.
+    } finally {
+      this.refreshing = false;
     }
   }
 

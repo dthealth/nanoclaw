@@ -49,14 +49,34 @@ If `dist/` is missing or `src/` is newer than `dist/`:
 npm run build
 ```
 
-## Start in background
+## Start in background with restart loop
 
-Use the Bash `run_in_background` parameter so the process survives the conversation:
+Wrap `npm start` in a shell loop so crashes (Slack watchdog `process.exit(1)`, env throws, wedged WebSocket recoveries, etc.) trigger an automatic restart. Pass `run_in_background: true` to Bash so the loop survives the conversation:
+
 ```bash
-cd /Users/dantam/Documents/Code/nanoclaw && npm start
+cd /Users/dantam/Documents/Code/nanoclaw && while true; do
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] starting NanoClaw" >> logs/supervisor.log
+  npm start
+  exit_code=$?
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] NanoClaw exited with code $exit_code, restarting in 5s" >> logs/supervisor.log
+  sleep 5
+done
 ```
 
-After starting, **wait a few seconds** then check `logs/nanoclaw.log` and `logs/nanoclaw.error.log` for either successful startup (look for `NanoClaw running`) or an error. Report the result.
+Notes:
+- The loop never exits on its own — to stop NanoClaw permanently you'll need to find both the `while`-loop shell PID and the `node dist/index.js` child, and kill the shell first (or use `pkill -f "while true; do.*npm start"`). Killing just the node process triggers a restart, which is the whole point.
+- The 5-second sleep prevents tight crash loops if something is fundamentally broken (e.g. `op` unauthenticated → `env.ts` throws on every start).
+- `logs/supervisor.log` records every start/exit so you can see how often it's restarting.
+
+After starting, **wait a few seconds** then check the latest `logs/nanoclaw.log` lines for `NanoClaw running` or grep `logs/supervisor.log` for repeated exits (sign of a real problem). Report the result.
+
+## How to stop NanoClaw
+
+```bash
+pkill -f "while true; do.*npm start" && pkill -f "dist/index.js"
+```
+
+Order matters — kill the supervisor loop first, then the node process. If you kill node first, the loop will restart it before you can kill the loop.
 
 ## Why terminal and not launchd
 
@@ -67,6 +87,6 @@ When NanoClaw runs from a terminal you launched yourself, `op` calls succeed sil
 ## Trade-offs the user already accepted
 
 - **No auto-start on boot.** After reboot, the user must re-run this skill.
-- **No auto-restart on crash.** If NanoClaw exits (e.g. `env.ts` throws because `op` is temporarily unauthorized), it stays down until restarted.
+- **Crash loops are masked.** The supervisor loop restarts NanoClaw on any exit. If NanoClaw is fundamentally broken (e.g. bad code, missing dep), it will restart-fail in a 5-second loop forever. Check `logs/supervisor.log` for restart frequency — more than ~1/minute means investigate, don't just keep restarting.
 
-If the user later wants boot/crash resilience back, the alternative is to resolve all `op://` refs once at install time and write plaintext into `.env` — that path is documented in `/customize` / `/setup`.
+If the user later wants OS-level supervision and auto-start on boot, the alternative is to resolve all `op://` refs once at install time and write plaintext into `.env` so launchd can spawn the process. That path is documented in `/customize` / `/setup`. Trade-off: plaintext secrets on disk, manual rotation when credentials change.
